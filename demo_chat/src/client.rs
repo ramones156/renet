@@ -274,9 +274,9 @@ impl ChatApp {
                         ServerMessages::ClientConnected(id, nick) => {
                             self.clients.insert(id, nick);
                         }
-                        ServerMessages::ClientDisconnected(id, reason) => {
+                        ServerMessages::ClientDisconnected(id) => {
                             self.clients.remove(&id);
-                            let message = format!("client {} disconnect: {}", id, reason);
+                            let message = format!("client {} disconnect", id);
                             self.messages.push((self.connected_server_addr.unwrap(), message, true));
                         }
                         ServerMessages::ClientMessage(nick, text) => {

@@ -41,11 +41,11 @@ impl ChatServer {
                 ServerEvent::ClientConnected(id) => {
                     self.clients_initializing.insert(id);
                 }
-                ServerEvent::ClientDisconnected(id, reason) => {
+                ServerEvent::ClientDisconnected(id, _) => {
                     self.clients_initializing.remove(&id);
                     self.clients.remove(&id);
                     let message = bincode::options()
-                        .serialize(&ServerMessages::ClientDisconnected(id, reason))
+                        .serialize(&ServerMessages::ClientDisconnected(id))
                         .unwrap();
                     self.server.broadcast_message(0, message);
                 }

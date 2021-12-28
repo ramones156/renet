@@ -1,7 +1,6 @@
 use client::ChatApp;
 use eframe::{egui, epi};
 use log::Level;
-use renet_udp::renet::error::DisconnectionReason;
 use serde::{Deserialize, Serialize};
 
 use history_logger::{HistoryLogger, LoggerApp};
@@ -23,7 +22,7 @@ enum ClientMessages {
 #[derive(Debug, Serialize, Deserialize)]
 enum ServerMessages {
     ClientConnected(SocketAddr, String),
-    ClientDisconnected(SocketAddr, DisconnectionReason),
+    ClientDisconnected(SocketAddr),
     ClientMessage(SocketAddr, String),
     MessageReceived(u64),
     InitClient { clients: HashMap<SocketAddr, String> },
