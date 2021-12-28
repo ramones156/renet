@@ -11,7 +11,7 @@ use crate::{
 };
 use log::{error, info};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(crate) struct SliceMessage {
     pub chunk_id: u16,
     pub slice_id: u32,

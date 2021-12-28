@@ -5,27 +5,29 @@ use crate::error::DisconnectionReason;
 use bincode::Options;
 use serde::{Deserialize, Serialize};
 
+use std::io::{Read, Write};
+
 pub type Payload = Vec<u8>;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(crate) struct ReliableChannelData {
     pub channel_id: u8,
     pub messages: Vec<ReliableMessage>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(crate) struct UnreliableChannelData {
     pub channel_id: u8,
     pub messages: Vec<Payload>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(crate) struct BlockChannelData {
     pub channel_id: u8,
     pub messages: Vec<SliceMessage>,
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(crate) struct AckData {
     pub ack: u16,
     pub ack_bits: u32,
@@ -39,7 +41,7 @@ pub(crate) enum Packet {
     Disconnect(DisconnectionReason),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(crate) struct ChannelMessages {
     pub block_channels_data: Vec<BlockChannelData>,
     pub unreliable_channels_data: Vec<UnreliableChannelData>,
@@ -52,14 +54,14 @@ impl ChannelMessages {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(crate) struct Normal {
     pub sequence: u16,
     pub ack_data: AckData,
     pub channel_messages: ChannelMessages,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(crate) struct Fragment {
     pub ack_data: AckData,
     pub sequence: u16,
@@ -68,7 +70,7 @@ pub(crate) struct Fragment {
     pub payload: Payload,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(crate) struct HeartBeat {
     pub ack_data: AckData,
 }
@@ -103,276 +105,12 @@ pub fn disconnect_packet(reason: DisconnectionReason) -> Result<Payload, bincode
     Ok(packet)
 }
 
-use std::io;
-
-impl Packet {
-    fn serialize_size(&self) -> usize {
-        match self {
-            Packet::Normal(Normal { channel_messages, .. }) => {
-                let mut size = 0;
-                size += 1; // packet_type
-                size += 2; // sequence
-                size += 6; // ack_data
-                
-                size += 1; // channel_size
-                for data in channel_messages.reliable_channels_data.iter() {
-                    size += 1; // channel_id
-                    size += 2; // message_len
-                    for message in data.messages.iter() {
-                        size += 2; // id
-                        size += 2; // message_size
-                        size += message.payload.len();
-                    }
-                }
-
-                size += 1; // channel_size
-                for data in channel_messages.unreliable_channels_data.iter() {
-                    size += 1; // channel_id
-                    size += 2; // message_len
-                    for message in data.messages.iter() {
-                        size += 2; // message_size
-                        size += message.len();
-                    }
-                }
-
-                size += 1; // channel_size
-                for data in channel_messages.block_channels_data.iter() {
-                    size += 1; // channel_id
-                    size += 2; // message_len
-                    for message in data.messages.iter() {
-                        size += 2; // chunk_id
-                        size += 4; // slice_id
-                        size += 4; // num_slices
-                        size += 2; // message_size
-                        size += message.payload.len();
-                    }
-                }
-                size
-            }
-            _ => 0,
-        }
-    }
-    fn write(&self, out: &mut impl io::Write) -> Result<(), io::Error> {
-        match self {
-            Packet::Normal(Normal {
-                sequence,
-                ack_data,
-                channel_messages,
-            }) => {
-                out.write(&[0])?;
-                out.write(&sequence.to_le_bytes())?;
-                out.write(&ack_data.ack.to_le_bytes())?;
-                out.write(&ack_data.ack_bits.to_le_bytes())?;
-
-                let reliable_channel_len = channel_messages.reliable_channels_data.len() as u8;
-                out.write(&reliable_channel_len.to_le_bytes())?;
-                for data in channel_messages.reliable_channels_data.iter() {
-                    out.write(&data.channel_id.to_le_bytes())?;
-                    // TODO: limit size to u16::MAX
-                    let messages_len = data.messages.len() as u16;
-                    out.write(&messages_len.to_le_bytes())?;
-                    for message in data.messages.iter() {
-                        out.write(&message.id.to_le_bytes())?;
-                        // TODO: limit size to u16::MAX
-                        let size = message.payload.len() as u16;
-                        out.write(&size.to_le_bytes())?;
-                        out.write_all(&message.payload)?;
-                    }
-                }
-
-                let unreliable_channel_len = channel_messages.unreliable_channels_data.len() as u8;
-                out.write(&unreliable_channel_len.to_le_bytes())?;
-                for data in channel_messages.unreliable_channels_data.iter() {
-                    out.write(&data.channel_id.to_le_bytes())?;
-                    // TODO: limit size to u16::MAX
-                    let messages_len = data.messages.len() as u16;
-                    out.write(&messages_len.to_le_bytes())?;
-                    for message in data.messages.iter() {
-                        // TODO: limit size to u16::MAX
-                        let size = message.len() as u16;
-                        out.write(&size.to_le_bytes())?;
-                        out.write_all(&message)?;
-                    }
-                }
-
-                let block_channel_len = channel_messages.block_channels_data.len() as u8;
-                out.write(&block_channel_len.to_le_bytes())?;
-                for data in channel_messages.block_channels_data.iter() {
-                    out.write(&data.channel_id.to_le_bytes())?;
-                    // TODO: limit size to u16::MAX
-                    let messages_len = data.messages.len() as u16;
-                    out.write(&messages_len.to_le_bytes())?;
-                    for message in data.messages.iter() {
-                        out.write(&message.chunk_id.to_le_bytes())?;
-                        out.write(&message.slice_id.to_le_bytes())?;
-                        out.write(&message.num_slices.to_le_bytes())?;
-                        // TODO: limit size to u16::MAX
-                        let size = message.payload.len() as u16;
-                        out.write(&size.to_le_bytes())?;
-                        out.write_all(&message.payload)?;
-                    }
-                }
-            }
-            Packet::Fragment(Fragment {
-                sequence,
-                ack_data,
-                fragment_id,
-                num_fragments,
-                payload,
-            }) => {
-                out.write(&[1])?;
-                out.write(&sequence.to_le_bytes())?;
-                out.write(&ack_data.ack.to_le_bytes())?;
-                out.write(&ack_data.ack_bits.to_le_bytes())?;
-                out.write(&fragment_id.to_le_bytes())?;
-                out.write(&num_fragments.to_le_bytes())?;
-                let size = payload.len() as u16;
-                out.write(&size.to_le_bytes())?;
-                out.write_all(&payload)?;
-            }
-            Packet::Heartbeat(HeartBeat { ack_data }) => {
-                out.write(&[2])?;
-                out.write(&ack_data.ack.to_le_bytes())?;
-                out.write(&ack_data.ack_bits.to_le_bytes())?;
-            }
-            Packet::Disconnect(reason) => {
-                out.write(&[3])?;
-                out.write(&reason.id().to_le_bytes())?;
-                match reason {
-                    DisconnectionReason::InvalidChannelId(channel_id)
-                    | DisconnectionReason::MismatchingChannelType(channel_id)
-                    | DisconnectionReason::ReliableChannelOutOfSync(channel_id) => {
-                        out.write(&channel_id.to_le_bytes())?;
-                    }
-                    _ => {
-                        out.write(&[0])?;
-                    }
-                };
-            }
-        }
-
-        Ok(())
-    }
-
-    fn read(src: &mut impl io::Read) -> Result<Self, PacketError> {
-        let packet_type = read_u8(src)?;
-        match packet_type {
-            0 => {
-                // Normal
-                let sequence = read_u16(src)?;
-                let ack = read_u16(src)?;
-                let ack_bits = read_u32(src)?;
-                let ack_data = AckData { ack, ack_bits };
-
-                let reliable_channel_len = read_u8(src)? as usize;
-                let mut reliable_channels_data = Vec::with_capacity(reliable_channel_len);
-                for _ in 0..reliable_channel_len {
-                    let channel_id = read_u8(src)?;
-                    let messages_len = read_u16(src)? as usize;
-                    let mut messages = Vec::with_capacity(messages_len);
-                    for _ in 0..messages_len {
-                        let id = read_u16(src)?;
-                        let size = read_u16(src)? as usize;
-                        let mut payload = vec![0; size];
-                        src.read_exact(&mut payload)?;
-                        messages.push(ReliableMessage { id, payload });
-                    }
-                    reliable_channels_data.push(ReliableChannelData { channel_id, messages });
-                }
-
-                let unreliable_channel_len = read_u8(src)? as usize;
-                let mut unreliable_channels_data = Vec::with_capacity(unreliable_channel_len);
-                for _ in 0..unreliable_channel_len {
-                    let channel_id = read_u8(src)?;
-                    let messages_len = read_u16(src)? as usize;
-                    let mut messages = Vec::with_capacity(messages_len);
-                    for _ in 0..messages_len {
-                        let size = read_u16(src)? as usize;
-                        let mut payload = vec![0; size];
-                        src.read_exact(&mut payload)?;
-                        messages.push(payload);
-                    }
-                    unreliable_channels_data.push(UnreliableChannelData { channel_id, messages });
-                }
-
-                let block_channel_len = read_u8(src)? as usize;
-                let mut block_channels_data = Vec::with_capacity(block_channel_len);
-                for _ in 0..block_channel_len {
-                    let channel_id = read_u8(src)?;
-                    let messages_len = read_u16(src)? as usize;
-                    let mut messages = Vec::with_capacity(messages_len);
-                    for _ in 0..messages_len {
-                        let chunk_id = read_u16(src)?;
-                        let slice_id = read_u32(src)?;
-                        let num_slices = read_u32(src)?;
-                        let size = read_u16(src)? as usize;
-                        let mut payload = vec![0; size];
-                        src.read_exact(&mut payload)?;
-                        messages.push(SliceMessage {
-                            chunk_id,
-                            slice_id,
-                            num_slices,
-                            payload,
-                        });
-                    }
-                    block_channels_data.push(BlockChannelData { channel_id, messages });
-                }
-
-                let channel_messages = ChannelMessages {
-                    reliable_channels_data,
-                    unreliable_channels_data,
-                    block_channels_data,
-                };
-
-                Ok(Packet::Normal(Normal {
-                    sequence,
-                    ack_data,
-                    channel_messages,
-                }))
-            }
-            1 => {
-                let sequence = read_u16(src)?;
-                let ack = read_u16(src)?;
-                let ack_bits = read_u32(src)?;
-                let ack_data = AckData { ack, ack_bits };
-                let fragment_id = read_u8(src)?;
-                let num_fragments = read_u8(src)?;
-                let size = read_u16(src)? as usize;
-                let mut payload = vec![0; size];
-                src.read_exact(&mut payload)?;
-
-                Ok(Packet::Fragment(Fragment {
-                    sequence,
-                    ack_data,
-                    fragment_id,
-                    num_fragments,
-                    payload,
-                }))
-            }
-            2 => {
-                let ack = read_u16(src)?;
-                let ack_bits = read_u32(src)?;
-                let ack_data = AckData { ack, ack_bits };
-                Ok(Packet::Heartbeat(HeartBeat { ack_data }))
-            }
-            3 => {
-                let reason_id = read_u8(src)?;
-                let channel_id = read_u8(src)?;
-                match DisconnectionReason::try_from(reason_id, channel_id) {
-                    Some(reason) => Ok(Packet::Disconnect(reason)),
-                    None => Err(PacketError::InvalidDisconnectReason),
-                }
-            }
-            _ => Err(PacketError::InvalidPacketType),
-        }
-    }
-}
-
 use std::error;
 use std::fmt;
+use std::io;
 
 #[derive(Debug)]
-enum PacketError {
+pub enum PacketError {
     InvalidPacketType,
     InvalidDisconnectReason,
     IoError(io::Error),
@@ -398,55 +136,183 @@ impl From<io::Error> for PacketError {
     }
 }
 
-#[inline]
-fn read_u64(src: &mut impl io::Read) -> Result<u64, io::Error> {
-    let mut buffer = [0u8; 8];
-    src.read_exact(&mut buffer)?;
-    Ok(u64::from_le_bytes(buffer))
+impl HeartBeat {
+    fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
+        s.serialize_u16(&mut self.ack_data.ack)?;
+        s.serialize_u32(&mut self.ack_data.ack_bits)?;
+        Ok(())
+    }
 }
 
-#[inline]
-fn read_u32(src: &mut impl io::Read) -> Result<u32, io::Error> {
-    let mut buffer = [0u8; 4];
-    src.read_exact(&mut buffer)?;
-    Ok(u32::from_le_bytes(buffer))
+impl DisconnectionReason {
+    fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), PacketError> {
+        let mut reason_id = self.id();
+        s.serialize_u8(&mut reason_id)?;
+        let mut channel_id = 0;
+        s.serialize_u8(&mut channel_id)?;
+        match DisconnectionReason::try_from(reason_id, channel_id) {
+            Some(reason) => *self = reason,
+            None => return Err(PacketError::InvalidDisconnectReason),
+        }
+        Ok(())
+    }
 }
 
-#[inline]
-fn read_u16(src: &mut impl io::Read) -> Result<u16, io::Error> {
-    let mut buffer = [0u8; 2];
-    src.read_exact(&mut buffer)?;
-    Ok(u16::from_le_bytes(buffer))
+impl Fragment {
+    pub fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
+        s.serialize_u16(&mut self.sequence)?;
+        s.serialize_u16(&mut self.ack_data.ack)?;
+        s.serialize_u32(&mut self.ack_data.ack_bits)?;
+        s.serialize_u8(&mut self.fragment_id)?;
+        s.serialize_u8(&mut self.num_fragments)?;
+        s.serialize_vec_len_as_u16(&mut self.payload)?;
+        Ok(())
+    }
 }
 
-#[inline]
-fn read_u8(src: &mut impl io::Read) -> Result<u8, io::Error> {
-    let mut buffer = [0u8; 1];
-    src.read_exact(&mut buffer)?;
-    Ok(u8::from_le_bytes(buffer))
+impl ChannelMessages {
+    pub fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
+        let Self {
+            reliable_channels_data,
+            unreliable_channels_data,
+            block_channels_data,
+        } = self;
+
+        let mut reliable_data_len = reliable_channels_data.len() as u8;
+        s.serialize_u8(&mut reliable_data_len)?;
+        if s.is_reading() {
+            self.reliable_channels_data.resize(reliable_data_len as usize, Default::default());
+        }
+        for data in self.reliable_channels_data.iter_mut() {
+            s.serialize_u8(&mut data.channel_id)?;
+            let mut messages_len = data.messages.len() as u16;
+            s.serialize_u16(&mut messages_len)?;
+            if s.is_reading() {
+                data.messages.resize(messages_len as usize, Default::default());
+            }
+            for message in data.messages.iter_mut() {
+                s.serialize_u16(&mut message.id)?;
+                s.serialize_vec_len_as_u16(&mut message.payload)?;
+            }
+        }
+
+        let mut unreliable_data_len = unreliable_channels_data.len() as u8;
+        s.serialize_u8(&mut unreliable_data_len)?;
+        if s.is_reading() {
+            self.unreliable_channels_data
+                .resize(unreliable_data_len as usize, Default::default());
+        }
+        for data in self.unreliable_channels_data.iter_mut() {
+            s.serialize_u8(&mut data.channel_id)?;
+            let mut messages_len = data.messages.len() as u16;
+            s.serialize_u16(&mut messages_len)?;
+            if s.is_reading() {
+                data.messages.resize(messages_len as usize, Default::default());
+            }
+            for mut message in data.messages.iter_mut() {
+                s.serialize_vec_len_as_u16(&mut message)?;
+            }
+        }
+
+        let mut block_data_len = block_channels_data.len() as u8;
+        s.serialize_u8(&mut block_data_len)?;
+        if s.is_reading() {
+            self.block_channels_data.resize(block_data_len as usize, Default::default());
+        }
+        for data in self.block_channels_data.iter_mut() {
+            s.serialize_u8(&mut data.channel_id)?;
+            let mut messages_len = data.messages.len() as u16;
+            s.serialize_u16(&mut messages_len)?;
+            if s.is_reading() {
+                data.messages.resize(messages_len as usize, Default::default());
+            }
+            for message in data.messages.iter_mut() {
+                s.serialize_u16(&mut message.chunk_id)?;
+                s.serialize_u32(&mut message.slice_id)?;
+                s.serialize_u32(&mut message.num_slices)?;
+                s.serialize_vec_len_as_u16(&mut message.payload)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
-#[inline]
-fn read_bytes<const N: usize>(src: &mut impl io::Read) -> Result<[u8; N], io::Error> {
-    let mut data = [0u8; N];
-    src.read_exact(&mut data)?;
-    Ok(data)
+impl Normal {
+    fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
+        s.serialize_u16(&mut self.sequence)?;
+        s.serialize_u16(&mut self.ack_data.ack)?;
+        s.serialize_u32(&mut self.ack_data.ack_bits)?;
+        self.channel_messages.serialize_stream(s)?;
+
+        Ok(())
+    }
+}
+
+impl Packet {
+    pub fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), PacketError> {
+        match self {
+            Packet::Normal(inner) => inner.serialize_stream(s)?,
+            Packet::Fragment(inner) => inner.serialize_stream(s)?,
+            Packet::Heartbeat(inner) => inner.serialize_stream(s)?,
+            Packet::Disconnect(inner) => inner.serialize_stream(s)?,
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn reliable(id: u16) -> ReliableMessage {
-        let i = id as u8;
-        ReliableMessage {
-            id,
-            payload: vec![i; i as usize],
+    #[test]
+    fn heartbeat_stream_serialize() {
+        let mut buffer = vec![];
+        let mut heartbeat = HeartBeat {
+            ack_data: AckData { ack_bits: 7, ack: 3 },
+        };
+        {
+            let mut write_stream = WriteStream { buffer: &mut buffer };
+            heartbeat.serialize_stream(&mut write_stream).unwrap();
         }
+        let mut result = HeartBeat::default();
+        let mut read_stream = ReadStream { buffer: &buffer[..] };
+        result.serialize_stream(&mut read_stream).unwrap();
+
+        assert_eq!(heartbeat, result);
+        let mut measure_stream = MeasureStream { size: 0 };
+        heartbeat.serialize_stream(&mut measure_stream).unwrap();
+        assert_eq!(measure_stream.size, buffer.len());
     }
 
     #[test]
-    fn packet_normal_serialize() {
+    fn fragment_stream_serialize() {
+        let mut buffer = vec![];
+        let mut fargment = Fragment {
+            sequence: 3,
+            fragment_id: 1,
+            num_fragments: 8,
+            payload: vec![1, 2, 3, 4, 5, 6],
+            ack_data: AckData { ack_bits: 7, ack: 3 },
+        };
+        {
+            let mut write_stream = WriteStream { buffer: &mut buffer };
+            fargment.serialize_stream(&mut write_stream).unwrap();
+        }
+
+        let mut result = Fragment::default();
+        let mut read_stream = ReadStream { buffer: &buffer[..] };
+        result.serialize_stream(&mut read_stream).unwrap();
+
+        assert_eq!(fargment, result);
+        let mut measure_stream = MeasureStream { size: 0 };
+        fargment.serialize_stream(&mut measure_stream).unwrap();
+        assert_eq!(measure_stream.size, buffer.len());
+    }
+
+    #[test]
+    fn normal_stream_serialize() {
         let reliable_channels_data = vec![
             ReliableChannelData {
                 channel_id: 0,
@@ -487,108 +353,193 @@ mod tests {
             block_channels_data,
         };
         let ack_data = AckData { ack_bits: 3, ack: 0 };
-        let normal_packet = Packet::Normal(Normal {
+        let mut normal = Normal {
             sequence: 7,
             ack_data,
             channel_messages,
-        });
+        };
 
-        let mut buffer: Vec<u8> = vec![];
-        normal_packet.write(&mut buffer).unwrap();
-        assert_eq!(normal_packet.serialize_size(), buffer.len());
+        let mut buffer = vec![];
+        {
+            let mut write_stream = WriteStream { buffer: &mut buffer };
+            normal.serialize_stream(&mut write_stream).unwrap();
+        }
+        let mut result = Normal::default();
+        let mut read_stream = ReadStream { buffer: &buffer[..] };
+        result.serialize_stream(&mut read_stream).unwrap();
 
-        let result = Packet::read(&mut buffer.as_slice()).unwrap();
-        assert_eq!(normal_packet, result);
+        assert_eq!(normal, result);
+        let mut measure_stream = MeasureStream { size: 0 };
+        normal.serialize_stream(&mut measure_stream).unwrap();
+        assert_eq!(measure_stream.size, buffer.len());
     }
 
     #[test]
-    fn packet_fragment_serialize() {
-        let fragment_packet = Packet::Fragment(Fragment {
-            sequence: 0,
-            ack_data: AckData { ack: 0, ack_bits: 1 },
-            fragment_id: 1,
-            num_fragments: 8,
-            payload: vec![7, 7, 7, 7],
-        });
+    fn disconnect_stream_serialize() {
+        let mut buffer = vec![];
+        let mut disconnect_packet = DisconnectionReason::MaxConnections;
+        {
+            let mut write_stream = WriteStream { buffer: &mut buffer };
+            disconnect_packet.serialize_stream(&mut write_stream).unwrap();
+        }
+        let mut result = DisconnectionReason::TimedOut;
+        let mut read_stream = ReadStream { buffer: &buffer[..] };
+        result.serialize_stream(&mut read_stream).unwrap();
 
-        let mut buffer: Vec<u8> = vec![];
-        fragment_packet.write(&mut buffer).unwrap();
-
-        let result = Packet::read(&mut buffer.as_slice()).unwrap();
-        assert_eq!(fragment_packet, result);
+        assert_eq!(disconnect_packet, result);
+        let mut measure_stream = MeasureStream { size: 0 };
+        disconnect_packet.serialize_stream(&mut measure_stream).unwrap();
+        assert_eq!(measure_stream.size, buffer.len());
     }
 
-    #[test]
-    fn packet_heartbeat_serialize() {
-        let heartbeat_packet = Packet::Heartbeat(HeartBeat {
-            ack_data: AckData { ack: 3, ack_bits: 7 },
-        });
-
-        let mut buffer: Vec<u8> = vec![];
-        heartbeat_packet.write(&mut buffer).unwrap();
-
-        let result = Packet::read(&mut buffer.as_slice()).unwrap();
-        assert_eq!(heartbeat_packet, result);
-    }
-
-    #[test]
-    fn packet_disconnect_serialize() {
-        {
-            let disconnect_packet = Packet::Disconnect(DisconnectionReason::MaxConnections);
-            let mut buffer: Vec<u8> = vec![];
-            disconnect_packet.write(&mut buffer).unwrap();
-            let result = Packet::read(&mut buffer.as_slice()).unwrap();
-            assert_eq!(disconnect_packet, result);
-        }
-        {
-            let disconnect_packet = Packet::Disconnect(DisconnectionReason::TimedOut);
-            let mut buffer: Vec<u8> = vec![];
-            disconnect_packet.write(&mut buffer).unwrap();
-            let result = Packet::read(&mut buffer.as_slice()).unwrap();
-            assert_eq!(disconnect_packet, result);
-        }
-        {
-            let disconnect_packet = Packet::Disconnect(DisconnectionReason::DisconnectedByServer);
-            let mut buffer: Vec<u8> = vec![];
-            disconnect_packet.write(&mut buffer).unwrap();
-            let result = Packet::read(&mut buffer.as_slice()).unwrap();
-            assert_eq!(disconnect_packet, result);
-        }
-        {
-            let disconnect_packet = Packet::Disconnect(DisconnectionReason::DisconnectedByClient);
-            let mut buffer: Vec<u8> = vec![];
-            disconnect_packet.write(&mut buffer).unwrap();
-            let result = Packet::read(&mut buffer.as_slice()).unwrap();
-            assert_eq!(disconnect_packet, result);
-        }
-        {
-            let disconnect_packet = Packet::Disconnect(DisconnectionReason::ClientAlreadyConnected);
-            let mut buffer: Vec<u8> = vec![];
-            disconnect_packet.write(&mut buffer).unwrap();
-            let result = Packet::read(&mut buffer.as_slice()).unwrap();
-            assert_eq!(disconnect_packet, result);
-        }
-        {
-            let disconnect_packet = Packet::Disconnect(DisconnectionReason::InvalidChannelId(1));
-            let mut buffer: Vec<u8> = vec![];
-            disconnect_packet.write(&mut buffer).unwrap();
-            let result = Packet::read(&mut buffer.as_slice()).unwrap();
-            assert_eq!(disconnect_packet, result);
-        }
-        {
-            let disconnect_packet = Packet::Disconnect(DisconnectionReason::MismatchingChannelType(2));
-            let mut buffer: Vec<u8> = vec![];
-            disconnect_packet.write(&mut buffer).unwrap();
-            let result = Packet::read(&mut buffer.as_slice()).unwrap();
-            assert_eq!(disconnect_packet, result);
-        }
-        {
-            let disconnect_packet = Packet::Disconnect(DisconnectionReason::ReliableChannelOutOfSync(3));
-            let mut buffer: Vec<u8> = vec![];
-            disconnect_packet.write(&mut buffer).unwrap();
-            let result = Packet::read(&mut buffer.as_slice()).unwrap();
-            assert_eq!(disconnect_packet, result);
+    fn reliable(id: u16) -> ReliableMessage {
+        let i = id as u8;
+        ReliableMessage {
+            id,
+            payload: vec![i; i as usize],
         }
     }
 }
 
+pub trait Stream {
+    fn is_writing(&self) -> bool;
+    fn is_reading(&self) -> bool;
+    fn serialize_u8(&mut self, value: &mut u8) -> Result<(), io::Error>;
+    fn serialize_u16(&mut self, value: &mut u16) -> Result<(), io::Error>;
+    fn serialize_u32(&mut self, value: &mut u32) -> Result<(), io::Error>;
+    fn serialize_u64(&mut self, value: &mut u64) -> Result<(), io::Error>;
+    fn serialize_bytes(&mut self, value: &mut [u8]) -> Result<(), io::Error>;
+    fn serialize_vec_len_as_u16(&mut self, value: &mut Vec<u8>) -> Result<(), io::Error>;
+}
+
+pub struct WriteStream<'a> {
+    buffer: &'a mut Vec<u8>,
+}
+
+impl<'a> Stream for WriteStream<'a> {
+    fn is_writing(&self) -> bool {
+        true
+    }
+    fn is_reading(&self) -> bool {
+        false
+    }
+
+    fn serialize_u8(&mut self, value: &mut u8) -> Result<(), io::Error> {
+        self.buffer.write(&value.to_le_bytes())?;
+        Ok(())
+    }
+    fn serialize_u16(&mut self, value: &mut u16) -> Result<(), io::Error> {
+        self.buffer.write(&value.to_le_bytes())?;
+        Ok(())
+    }
+    fn serialize_u32(&mut self, value: &mut u32) -> Result<(), io::Error> {
+        self.buffer.write(&value.to_le_bytes())?;
+        Ok(())
+    }
+    fn serialize_u64(&mut self, value: &mut u64) -> Result<(), io::Error> {
+        self.buffer.write(&value.to_le_bytes())?;
+        Ok(())
+    }
+
+    fn serialize_bytes(&mut self, value: &mut [u8]) -> Result<(), io::Error> {
+        self.buffer.write_all(value)
+    }
+
+    fn serialize_vec_len_as_u16(&mut self, value: &mut Vec<u8>) -> Result<(), io::Error> {
+        let len = value.len() as u16;
+        self.buffer.write(&len.to_le_bytes())?;
+        self.buffer.write_all(value)
+    }
+}
+
+pub struct ReadStream<'a> {
+    buffer: &'a [u8],
+}
+
+impl<'a> Stream for ReadStream<'a> {
+    fn is_writing(&self) -> bool {
+        false
+    }
+    fn is_reading(&self) -> bool {
+        true
+    }
+
+    fn serialize_u8(&mut self, value: &mut u8) -> Result<(), io::Error> {
+        let mut buffer = [0u8; 1];
+        self.buffer.read_exact(&mut buffer)?;
+        *value = u8::from_le_bytes(buffer);
+        Ok(())
+    }
+    fn serialize_u16(&mut self, value: &mut u16) -> Result<(), io::Error> {
+        let mut buffer = [0u8; 2];
+        self.buffer.read_exact(&mut buffer)?;
+        *value = u16::from_le_bytes(buffer);
+        Ok(())
+    }
+    fn serialize_u32(&mut self, value: &mut u32) -> Result<(), io::Error> {
+        let mut buffer = [0u8; 4];
+        self.buffer.read_exact(&mut buffer)?;
+        *value = u32::from_le_bytes(buffer);
+        Ok(())
+    }
+    fn serialize_u64(&mut self, value: &mut u64) -> Result<(), io::Error> {
+        let mut buffer = [0u8; 8];
+        self.buffer.read_exact(&mut buffer)?;
+        *value = u64::from_le_bytes(buffer);
+        Ok(())
+    }
+
+    fn serialize_bytes(&mut self, value: &mut [u8]) -> Result<(), io::Error> {
+        self.buffer.read_exact(value)?;
+        Ok(())
+    }
+
+    fn serialize_vec_len_as_u16(&mut self, value: &mut Vec<u8>) -> Result<(), io::Error> {
+        let mut len = 0;
+        self.serialize_u16(&mut len)?;
+        value.resize(len as usize, 0);
+        self.buffer.read_exact(value)?;
+        Ok(())
+    }
+}
+
+pub struct MeasureStream {
+    size: usize,
+}
+
+impl Stream for MeasureStream {
+    fn is_writing(&self) -> bool {
+        false
+    }
+    fn is_reading(&self) -> bool {
+        true
+    }
+
+    fn serialize_u8(&mut self, _value: &mut u8) -> Result<(), io::Error> {
+        self.size += 1;
+        Ok(())
+    }
+    fn serialize_u16(&mut self, _value: &mut u16) -> Result<(), io::Error> {
+        self.size += 2;
+        Ok(())
+    }
+    fn serialize_u32(&mut self, _value: &mut u32) -> Result<(), io::Error> {
+        self.size += 4;
+        Ok(())
+    }
+    fn serialize_u64(&mut self, _value: &mut u64) -> Result<(), io::Error> {
+        self.size += 8;
+        Ok(())
+    }
+
+    fn serialize_bytes(&mut self, value: &mut [u8]) -> Result<(), io::Error> {
+        self.size += value.len();
+        Ok(())
+    }
+
+    fn serialize_vec_len_as_u16(&mut self, value: &mut Vec<u8>) -> Result<(), io::Error> {
+        self.size += 2;
+        self.size += value.len();
+        Ok(())
+    }
+}
