@@ -1,12 +1,11 @@
 use crate::channel::{Channel, ChannelConfig};
 use crate::error::{DisconnectionReason, RenetError};
-use crate::packet::{ChannelMessages, HeartBeat, Normal, Packet, Payload};
+use crate::packet::{ChannelMessages, HeartBeat, Normal, Packet, Payload, Serialize};
 
 use crate::reassembly_fragment::{build_fragments, FragmentConfig, ReassemblyFragment};
 use crate::sequence_buffer::SequenceBuffer;
 use crate::timer::Timer;
 
-use bincode::Options;
 use log::{debug, error};
 
 use std::collections::HashMap;
@@ -223,7 +222,7 @@ impl RemoteConnection {
 
         self.timeout_timer.reset();
         let received_bytes = packet.len();
-        let packet: Packet = bincode::options().deserialize(packet)?;
+        let packet: Packet = Packet::deserialize(packet)?;
 
         let channels_messages = match packet {
             Packet::Normal(Normal {
@@ -316,27 +315,27 @@ impl RemoteConnection {
         for channel in self.channels.values_mut() {
             match channel {
                 Channel::Reliable(reliable_channel) => {
-                    if let Some(channel_data) = reliable_channel.get_messages_to_send(available_bytes, sequence)? {
-                        available_bytes -= bincode::options().serialized_size(&channel_data)?;
+                    if let Some(mut channel_data) = reliable_channel.get_messages_to_send(available_bytes, sequence)? {
+                        available_bytes -= channel_data.serialize_size()?;
                         reliable_channels_data.push(channel_data);
                     }
                 }
                 Channel::Unreliable(unreliable_channel) => {
-                    if let Some(channel_data) = unreliable_channel.get_messages_to_send(available_bytes) {
-                        available_bytes -= bincode::options().serialized_size(&channel_data)?;
+                    if let Some(mut channel_data) = unreliable_channel.get_messages_to_send(available_bytes) {
+                        available_bytes -= channel_data.serialize_size()?;
                         unreliable_channels_data.push(channel_data);
                     }
                 }
                 Channel::Block(block_channel) => {
-                    if let Some(channel_data) = block_channel.get_messages_to_send(available_bytes, sequence)? {
-                        available_bytes -= bincode::options().serialized_size(&channel_data)?;
+                    if let Some(mut channel_data) = block_channel.get_messages_to_send(available_bytes, sequence)? {
+                        available_bytes -= channel_data.serialize_size()?;
                         block_channels_data.push(channel_data);
                     }
                 }
             }
         }
 
-        let channel_messages = ChannelMessages {
+        let mut channel_messages = ChannelMessages {
             reliable_channels_data,
             unreliable_channels_data,
             block_channels_data,
@@ -344,7 +343,7 @@ impl RemoteConnection {
 
         if !channel_messages.is_empty() {
             self.sequence = self.sequence.wrapping_add(1);
-            let packet_size = bincode::options().serialized_size(&channel_messages)?;
+            let packet_size = channel_messages.serialize_size()?;
             let ack_data = self.received_buffer.ack_data();
 
             let sent_packet = SentPacket::new(Instant::now(), packet_size as usize);
@@ -353,12 +352,12 @@ impl RemoteConnection {
             let packets: Vec<Payload> = if packet_size > self.config.fragment_config.fragment_above as u64 {
                 build_fragments(channel_messages, sequence, ack_data, &self.config.fragment_config)?
             } else {
-                let packet = Packet::Normal(Normal {
+                let mut packet = Packet::Normal(Normal {
                     sequence,
                     ack_data,
                     channel_messages,
                 });
-                let packet = bincode::options().serialize(&packet)?;
+                let packet = packet.serialize()?;
                 vec![packet]
             };
 
@@ -366,8 +365,8 @@ impl RemoteConnection {
             return Ok(packets);
         } else if self.heartbeat_timer.is_finished() {
             let ack_data = self.received_buffer.ack_data();
-            let packet = Packet::Heartbeat(HeartBeat { ack_data });
-            let packet = bincode::options().serialize(&packet)?;
+            let mut packet = Packet::Heartbeat(HeartBeat { ack_data });
+            let packet = packet.serialize()?;
 
             self.heartbeat_timer.reset();
             return Ok(vec![packet]);

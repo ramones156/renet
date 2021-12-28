@@ -2,38 +2,35 @@ use crate::channel::block::SliceMessage;
 use crate::channel::reliable::ReliableMessage;
 use crate::error::DisconnectionReason;
 
-use bincode::Options;
-use serde::{Deserialize, Serialize};
-
 use std::io::{Read, Write};
 
 pub type Payload = Vec<u8>;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct ReliableChannelData {
     pub channel_id: u8,
     pub messages: Vec<ReliableMessage>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct UnreliableChannelData {
     pub channel_id: u8,
     pub messages: Vec<Payload>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct BlockChannelData {
     pub channel_id: u8,
     pub messages: Vec<SliceMessage>,
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct AckData {
     pub ack: u16,
     pub ack_bits: u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Packet {
     Normal(Normal),
     Fragment(Fragment),
@@ -41,7 +38,7 @@ pub(crate) enum Packet {
     Disconnect(DisconnectionReason),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct ChannelMessages {
     pub block_channels_data: Vec<BlockChannelData>,
     pub unreliable_channels_data: Vec<UnreliableChannelData>,
@@ -54,14 +51,14 @@ impl ChannelMessages {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct Normal {
     pub sequence: u16,
     pub ack_data: AckData,
     pub channel_messages: ChannelMessages,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct Fragment {
     pub ack_data: AckData,
     pub sequence: u16,
@@ -70,7 +67,7 @@ pub(crate) struct Fragment {
     pub payload: Payload,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct HeartBeat {
     pub ack_data: AckData,
 }
@@ -99,10 +96,9 @@ impl From<DisconnectionReason> for Packet {
     }
 }
 
-pub fn disconnect_packet(reason: DisconnectionReason) -> Result<Payload, bincode::Error> {
-    let packet = Packet::Disconnect(reason);
-    let packet = bincode::options().serialize(&packet)?;
-    Ok(packet)
+pub fn disconnect_packet(reason: DisconnectionReason) -> Result<Payload, PacketError> {
+    let mut packet = Packet::Disconnect(reason);
+    packet.serialize()
 }
 
 use std::error;
@@ -136,7 +132,7 @@ impl From<io::Error> for PacketError {
     }
 }
 
-impl HeartBeat {
+impl Serialize for HeartBeat {
     fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
         s.serialize_u16(&mut self.ack_data.ack)?;
         s.serialize_u32(&mut self.ack_data.ack_bits)?;
@@ -158,8 +154,8 @@ impl DisconnectionReason {
     }
 }
 
-impl Fragment {
-    pub fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
+impl Serialize for Fragment {
+    fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
         s.serialize_u16(&mut self.sequence)?;
         s.serialize_u16(&mut self.ack_data.ack)?;
         s.serialize_u32(&mut self.ack_data.ack_bits)?;
@@ -170,8 +166,53 @@ impl Fragment {
     }
 }
 
-impl ChannelMessages {
-    pub fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
+impl Serialize for ReliableChannelData {
+    fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
+        s.serialize_u8(&mut self.channel_id)?;
+        let mut messages_len = self.messages.len() as u16;
+        s.serialize_u16(&mut messages_len)?;
+        if s.is_reading() {
+            self.messages.resize(messages_len as usize, Default::default());
+        }
+        for message in self.messages.iter_mut() {
+            message.serialize_stream(s)?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for UnreliableChannelData {
+    fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
+        s.serialize_u8(&mut self.channel_id)?;
+        let mut messages_len = self.messages.len() as u16;
+        s.serialize_u16(&mut messages_len)?;
+        if s.is_reading() {
+            self.messages.resize(messages_len as usize, Default::default());
+        }
+        for mut message in self.messages.iter_mut() {
+            s.serialize_vec_len_as_u16(&mut message)?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for BlockChannelData {
+    fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
+        s.serialize_u8(&mut self.channel_id)?;
+        let mut messages_len = self.messages.len() as u16;
+        s.serialize_u16(&mut messages_len)?;
+        if s.is_reading() {
+            self.messages.resize(messages_len as usize, Default::default());
+        }
+        for message in self.messages.iter_mut() {
+            message.serialize_stream(s)?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for ChannelMessages {
+    fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
         let Self {
             reliable_channels_data,
             unreliable_channels_data,
@@ -183,17 +224,9 @@ impl ChannelMessages {
         if s.is_reading() {
             self.reliable_channels_data.resize(reliable_data_len as usize, Default::default());
         }
+
         for data in self.reliable_channels_data.iter_mut() {
-            s.serialize_u8(&mut data.channel_id)?;
-            let mut messages_len = data.messages.len() as u16;
-            s.serialize_u16(&mut messages_len)?;
-            if s.is_reading() {
-                data.messages.resize(messages_len as usize, Default::default());
-            }
-            for message in data.messages.iter_mut() {
-                s.serialize_u16(&mut message.id)?;
-                s.serialize_vec_len_as_u16(&mut message.payload)?;
-            }
+            data.serialize_stream(s)?;
         }
 
         let mut unreliable_data_len = unreliable_channels_data.len() as u8;
@@ -203,15 +236,7 @@ impl ChannelMessages {
                 .resize(unreliable_data_len as usize, Default::default());
         }
         for data in self.unreliable_channels_data.iter_mut() {
-            s.serialize_u8(&mut data.channel_id)?;
-            let mut messages_len = data.messages.len() as u16;
-            s.serialize_u16(&mut messages_len)?;
-            if s.is_reading() {
-                data.messages.resize(messages_len as usize, Default::default());
-            }
-            for mut message in data.messages.iter_mut() {
-                s.serialize_vec_len_as_u16(&mut message)?;
-            }
+            data.serialize_stream(s)?;
         }
 
         let mut block_data_len = block_channels_data.len() as u8;
@@ -220,25 +245,14 @@ impl ChannelMessages {
             self.block_channels_data.resize(block_data_len as usize, Default::default());
         }
         for data in self.block_channels_data.iter_mut() {
-            s.serialize_u8(&mut data.channel_id)?;
-            let mut messages_len = data.messages.len() as u16;
-            s.serialize_u16(&mut messages_len)?;
-            if s.is_reading() {
-                data.messages.resize(messages_len as usize, Default::default());
-            }
-            for message in data.messages.iter_mut() {
-                s.serialize_u16(&mut message.chunk_id)?;
-                s.serialize_u32(&mut message.slice_id)?;
-                s.serialize_u32(&mut message.num_slices)?;
-                s.serialize_vec_len_as_u16(&mut message.payload)?;
-            }
+            data.serialize_stream(s)?;
         }
 
         Ok(())
     }
 }
 
-impl Normal {
+impl Serialize for Normal {
     fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
         s.serialize_u16(&mut self.sequence)?;
         s.serialize_u16(&mut self.ack_data.ack)?;
@@ -250,6 +264,34 @@ impl Normal {
 }
 
 impl Packet {
+    pub fn serialize(&mut self) -> Result<Vec<u8>, PacketError> {
+        let mut buffer = vec![];
+        let mut write_stream = WriteStream::new(&mut buffer);
+        let mut packet_type: u8 = match self {
+            Packet::Normal(_) => 0,
+            Packet::Fragment(_) => 1,
+            Packet::Heartbeat(_) => 2,
+            Packet::Disconnect(_) => 3,
+        };
+        write_stream.serialize_u8(&mut packet_type)?;
+        self.serialize_stream(&mut write_stream)?;
+        Ok(buffer)
+    }
+
+    pub fn deserialize(buffer: &[u8]) -> Result<Self, PacketError> {
+        let packet_type = buffer[0];
+        let mut read_stream = ReadStream::new(&buffer[1..]);
+        let mut packet = match packet_type {
+            0 => Packet::Normal(Normal::default()),
+            1 => Packet::Fragment(Fragment::default()),
+            2 => Packet::Heartbeat(HeartBeat::default()),
+            3 => Packet::Disconnect(DisconnectionReason::MaxConnections),
+            _ => return Err(PacketError::InvalidPacketType),
+        };
+        packet.serialize_stream(&mut read_stream)?;
+        Ok(packet)
+    }
+
     pub fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), PacketError> {
         match self {
             Packet::Normal(inner) => inner.serialize_stream(s)?,
@@ -268,22 +310,19 @@ mod tests {
 
     #[test]
     fn heartbeat_stream_serialize() {
-        let mut buffer = vec![];
         let mut heartbeat = HeartBeat {
             ack_data: AckData { ack_bits: 7, ack: 3 },
         };
-        {
-            let mut write_stream = WriteStream { buffer: &mut buffer };
-            heartbeat.serialize_stream(&mut write_stream).unwrap();
-        }
-        let mut result = HeartBeat::default();
-        let mut read_stream = ReadStream { buffer: &buffer[..] };
-        result.serialize_stream(&mut read_stream).unwrap();
+        let bytes = heartbeat.serialize().unwrap();
+        let result = HeartBeat::deserialize(&bytes).unwrap();
 
         assert_eq!(heartbeat, result);
-        let mut measure_stream = MeasureStream { size: 0 };
-        heartbeat.serialize_stream(&mut measure_stream).unwrap();
-        assert_eq!(measure_stream.size, buffer.len());
+        assert_eq!(bytes.len(), heartbeat.serialize_size().unwrap() as usize);
+
+        let mut packet = Packet::Heartbeat(heartbeat);
+        let bytes = packet.serialize().unwrap();
+        let result = Packet::deserialize(&bytes).unwrap();
+        assert_eq!(packet, result);
     }
 
     #[test]
@@ -308,7 +347,7 @@ mod tests {
         assert_eq!(fargment, result);
         let mut measure_stream = MeasureStream { size: 0 };
         fargment.serialize_stream(&mut measure_stream).unwrap();
-        assert_eq!(measure_stream.size, buffer.len());
+        assert_eq!(measure_stream.size, buffer.len() as u64);
     }
 
     #[test]
@@ -371,7 +410,7 @@ mod tests {
         assert_eq!(normal, result);
         let mut measure_stream = MeasureStream { size: 0 };
         normal.serialize_stream(&mut measure_stream).unwrap();
-        assert_eq!(measure_stream.size, buffer.len());
+        assert_eq!(measure_stream.size, buffer.len() as u64);
     }
 
     #[test]
@@ -389,7 +428,7 @@ mod tests {
         assert_eq!(disconnect_packet, result);
         let mut measure_stream = MeasureStream { size: 0 };
         disconnect_packet.serialize_stream(&mut measure_stream).unwrap();
-        assert_eq!(measure_stream.size, buffer.len());
+        assert_eq!(measure_stream.size, buffer.len() as u64);
     }
 
     fn reliable(id: u16) -> ReliableMessage {
@@ -414,6 +453,12 @@ pub trait Stream {
 
 pub struct WriteStream<'a> {
     buffer: &'a mut Vec<u8>,
+}
+
+impl<'a> WriteStream<'a> {
+    pub fn new(buffer: &'a mut Vec<u8>) -> Self {
+        Self { buffer }
+    }
 }
 
 impl<'a> Stream for WriteStream<'a> {
@@ -454,6 +499,12 @@ impl<'a> Stream for WriteStream<'a> {
 
 pub struct ReadStream<'a> {
     buffer: &'a [u8],
+}
+
+impl<'a> ReadStream<'a> {
+    pub fn new(buffer: &'a [u8]) -> Self {
+        Self { buffer }
+    }
 }
 
 impl<'a> Stream for ReadStream<'a> {
@@ -504,15 +555,21 @@ impl<'a> Stream for ReadStream<'a> {
 }
 
 pub struct MeasureStream {
-    size: usize,
+    size: u64,
+}
+
+impl MeasureStream {
+    pub fn new() -> Self {
+        Self { size: 0 }
+    }
 }
 
 impl Stream for MeasureStream {
     fn is_writing(&self) -> bool {
-        false
+        true
     }
     fn is_reading(&self) -> bool {
-        true
+        false
     }
 
     fn serialize_u8(&mut self, _value: &mut u8) -> Result<(), io::Error> {
@@ -533,13 +590,41 @@ impl Stream for MeasureStream {
     }
 
     fn serialize_bytes(&mut self, value: &mut [u8]) -> Result<(), io::Error> {
-        self.size += value.len();
+        self.size += value.len() as u64;
         Ok(())
     }
 
     fn serialize_vec_len_as_u16(&mut self, value: &mut Vec<u8>) -> Result<(), io::Error> {
         self.size += 2;
-        self.size += value.len();
+        self.size += value.len() as u64;
         Ok(())
+    }
+}
+
+pub trait Serialize
+where
+    Self: Sized + Default,
+{
+    fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error>;
+
+    fn serialize_size(&mut self) -> Result<u64, io::Error> {
+        let mut measure_stream = MeasureStream::new();
+        self.serialize_stream(&mut measure_stream)?;
+
+        Ok(measure_stream.size)
+    }
+
+    fn serialize(&mut self) -> Result<Vec<u8>, io::Error> {
+        let mut buffer = vec![];
+        let mut write_stream = WriteStream::new(&mut buffer);
+        self.serialize_stream(&mut write_stream)?;
+        Ok(buffer)
+    }
+
+    fn deserialize(buffer: &[u8]) -> Result<Self, io::Error> {
+        let mut read_stream = ReadStream::new(buffer);
+        let mut default = Self::default();
+        default.serialize_stream(&mut read_stream)?;
+        Ok(default)
     }
 }

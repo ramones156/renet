@@ -1,10 +1,9 @@
-use crate::reassembly_fragment::FragmentError;
-
-use serde::{Deserialize, Serialize};
+use crate::{reassembly_fragment::FragmentError, packet::PacketError};
 
 use std::fmt;
+use std::io;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisconnectionReason {
     /// Server has exceeded maximum players capacity
     MaxConnections,
@@ -76,7 +75,8 @@ pub enum RenetError {
     ClientDisconnected(DisconnectionReason),
     ClientNotFound,
     FragmentError(FragmentError),
-    BincodeError(bincode::Error),
+    PacketError(PacketError),
+    IoError(io::Error),
 }
 
 impl std::error::Error for RenetError {}
@@ -93,20 +93,27 @@ impl fmt::Display for RenetError {
             }
             ClientNotFound => write!(fmt, "client with given id was not found"),
             ClientDisconnected(reason) => write!(fmt, "client is disconnected: {}", reason),
-            BincodeError(ref bincode_err) => write!(fmt, "{}", bincode_err),
-            FragmentError(ref fragment_error) => write!(fmt, "{}", fragment_error),
+            PacketError(ref packet_err) => write!(fmt, "{}", packet_err),
+            FragmentError(ref fragment_err) => write!(fmt, "{}", fragment_err),
+            IoError(ref io_err) => write!(fmt, "{}", io_err),
         }
     }
 }
 
-impl From<bincode::Error> for RenetError {
-    fn from(inner: bincode::Error) -> Self {
-        RenetError::BincodeError(inner)
+impl From<PacketError> for RenetError {
+    fn from(inner: PacketError) -> Self {
+        RenetError::PacketError(inner)
     }
 }
 
 impl From<FragmentError> for RenetError {
     fn from(inner: FragmentError) -> Self {
         RenetError::FragmentError(inner)
+    }
+}
+
+impl From<io::Error> for RenetError {
+    fn from(inner: io::Error) -> Self {
+        RenetError::IoError(inner)
     }
 }

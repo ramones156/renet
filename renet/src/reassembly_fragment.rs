@@ -1,10 +1,9 @@
-use crate::packet::{AckData, ChannelMessages, Fragment, Packet, Payload};
+use crate::packet::{AckData, ChannelMessages, Fragment, Packet, Payload, PacketError, Serialize};
 use crate::sequence_buffer::SequenceBuffer;
-
-use bincode::Options;
 
 use std::error::Error;
 use std::fmt;
+use std::io;
 
 #[derive(Debug, Clone)]
 pub struct FragmentConfig {
@@ -29,7 +28,7 @@ pub enum FragmentError {
     AlreadyProcessed { sequence: u16, id: u8 },
     ExceededMaxFragmentCount { sequence: u16, expected: u8, got: u8 },
     OldSequence { sequence: u16 },
-    BincodeError(bincode::Error),
+    IoError(io::Error),
 }
 
 impl fmt::Display for FragmentError {
@@ -62,16 +61,16 @@ impl fmt::Display for FragmentError {
                 )
             }
             OldSequence { sequence } => write!(fmt, "fragment with sequence {} is too old", sequence),
-            BincodeError(ref bincode_err) => write!(fmt, "bincode error: {}", bincode_err),
+            IoError(ref io_err) => write!(fmt, "{}", io_err),
         }
     }
 }
 
 impl Error for FragmentError {}
 
-impl From<bincode::Error> for FragmentError {
-    fn from(inner: bincode::Error) -> Self {
-        FragmentError::BincodeError(inner)
+impl From<io::Error> for FragmentError {
+    fn from(inner: io::Error) -> Self {
+        FragmentError::IoError(inner)
     }
 }
 
@@ -176,7 +175,7 @@ impl SequenceBuffer<ReassemblyFragment> {
         if reassembly_fragment.num_fragments_received == reassembly_fragment.num_fragments_total {
             let reassembly_fragment = self.remove(sequence).expect("ReassemblyFragment always exists here");
 
-            let messages: ChannelMessages = bincode::options().deserialize(&reassembly_fragment.buffer)?;
+            let messages = ChannelMessages::deserialize(&reassembly_fragment.buffer)?;
 
             log::trace!("Completed the reassembly of packet {}.", reassembly_fragment.sequence);
             return Ok(Some(messages));
@@ -187,26 +186,26 @@ impl SequenceBuffer<ReassemblyFragment> {
 }
 
 pub(crate) fn build_fragments(
-    messages: ChannelMessages,
+    mut messages: ChannelMessages,
     sequence: u16,
     ack_data: AckData,
     config: &FragmentConfig,
-) -> Result<Vec<Payload>, bincode::Error> {
-    let payload = bincode::options().serialize(&messages)?;
+) -> Result<Vec<Payload>, PacketError> {
+    let payload = messages.serialize()?;
     let packet_bytes = payload.len();
     let exact_division = (packet_bytes % config.fragment_size != 0) as usize;
     let num_fragments = packet_bytes / config.fragment_size + exact_division;
 
     let mut fragments = Vec::with_capacity(num_fragments);
     for (id, chunk) in payload.chunks(config.fragment_size).enumerate() {
-        let fragment = Packet::Fragment(Fragment {
+        let mut fragment = Packet::Fragment(Fragment {
             fragment_id: id as u8,
             sequence,
             num_fragments: num_fragments as u8,
             ack_data,
             payload: chunk.into(),
         });
-        let fragment = bincode::options().serialize(&fragment)?;
+        let fragment = fragment.serialize()?;
         fragments.push(fragment);
     }
 
@@ -239,7 +238,7 @@ mod tests {
         let fragments: Vec<Fragment> = fragments
             .iter()
             .map(|payload| {
-                let fragment: Packet = bincode::options().deserialize(payload).unwrap();
+                let fragment: Packet = Packet::deserialize(payload).unwrap();
                 match fragment {
                     Packet::Fragment(f) => f,
                     _ => panic!(),

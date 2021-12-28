@@ -1,17 +1,14 @@
-use std::{collections::VecDeque, mem, time::Duration};
-
-use bincode::Options;
-use serde::{Deserialize, Serialize};
+use std::{collections::VecDeque, io, mem, time::Duration};
 
 use crate::{
     error::RenetError,
-    packet::{BlockChannelData, Payload},
+    packet::{BlockChannelData, Payload, Serialize, Stream},
     sequence_buffer::SequenceBuffer,
     timer::Timer,
 };
 use log::{error, info};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct SliceMessage {
     pub chunk_id: u16,
     pub slice_id: u32,
@@ -87,6 +84,16 @@ impl PacketSent {
     }
 }
 
+impl Serialize for SliceMessage {
+    fn serialize_stream(&mut self, s: &mut impl Stream) -> Result<(), io::Error> {
+        s.serialize_u16(&mut self.chunk_id)?;
+        s.serialize_u32(&mut self.slice_id)?;
+        s.serialize_u32(&mut self.num_slices)?;
+        s.serialize_vec_len_as_u16(&mut self.payload)?;
+        Ok(())
+    }
+}
+
 impl ChunkSender {
     fn new(slice_size: usize, sent_packet_buffer_size: usize, resend_time: Duration, packet_budget: u64) -> Self {
         Self {
@@ -146,15 +153,14 @@ impl ChunkSender {
 
             let data = self.chunk_data[start..end].to_vec();
 
-            let message = SliceMessage {
+            let mut message = SliceMessage {
                 chunk_id: self.chunk_id,
                 slice_id: slice_id as u32,
                 num_slices: self.num_slices as u32,
                 payload: data,
             };
 
-            let message_size = bincode::options().serialized_size(&message)?;
-            let message_size = message_size as u64;
+            let message_size = message.serialize_size()? as u64;
 
             if available_bytes < message_size {
                 break;
@@ -365,7 +371,7 @@ mod tests {
     #[test]
     fn split_chunk() {
         const SLICE_SIZE: usize = 10;
-        let mut sender = ChunkSender::new(SLICE_SIZE, 100, Duration::from_millis(100), 30);
+        let mut sender = ChunkSender::new(SLICE_SIZE, 100, Duration::from_millis(100), 44);
         let message = vec![255u8; 30];
         sender.send_message(message.clone()).unwrap();
 
