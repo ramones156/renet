@@ -11,12 +11,12 @@ use crate::{
 };
 use log::{error, info};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct SliceMessage {
-    chunk_id: u16,
-    slice_id: u32,
-    num_slices: u32,
-    data: Payload,
+    pub chunk_id: u16,
+    pub slice_id: u32,
+    pub num_slices: u32,
+    pub payload: Payload,
 }
 
 #[derive(Debug, Clone)]
@@ -150,7 +150,7 @@ impl ChunkSender {
                 chunk_id: self.chunk_id,
                 slice_id: slice_id as u32,
                 num_slices: self.num_slices as u32,
-                data,
+                payload: data,
             };
 
             let message_size = bincode::options().serialized_size(&message)?;
@@ -246,19 +246,19 @@ impl ChunkReceiver {
         let slice_id = message.slice_id as usize;
         let is_last_slice = slice_id == self.num_slices - 1;
         if is_last_slice {
-            if message.data.len() > self.slice_size {
+            if message.payload.len() > self.slice_size {
                 error!(
                     "Invalid last slice_size for SliceMessage, got {}, expected < {}.",
-                    message.data.len(),
+                    message.payload.len(),
                     self.slice_size,
                 );
                 return None;
             }
-        } else if message.data.len() != self.slice_size {
+        } else if message.payload.len() != self.slice_size {
             error!(
                 "Invalid slice_size for SliceMessage, expected {}, got {}.",
                 self.slice_size,
-                message.data.len()
+                message.payload.len()
             );
             return None;
         }
@@ -268,18 +268,18 @@ impl ChunkReceiver {
             self.num_received_slices += 1;
 
             if is_last_slice {
-                let len = (self.num_slices - 1) * self.slice_size + message.data.len();
+                let len = (self.num_slices - 1) * self.slice_size + message.payload.len();
                 self.chunk_data.resize(len, 0);
             }
 
             let start = slice_id * self.slice_size;
             let end = if slice_id == self.num_slices - 1 {
-                (self.num_slices - 1) * self.slice_size + message.data.len()
+                (self.num_slices - 1) * self.slice_size + message.payload.len()
             } else {
                 (slice_id + 1) * self.slice_size
             };
 
-            self.chunk_data[start..end].copy_from_slice(&message.data);
+            self.chunk_data[start..end].copy_from_slice(&message.payload);
             info!(
                 "Received slice {} from chunk {}. ({}/{})",
                 slice_id, self.chunk_id, self.num_received_slices, self.num_slices

@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use std::time::Duration;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct ReliableMessage {
-    id: u16,
-    payload: Payload,
+    pub id: u16,
+    pub payload: Payload,
 }
 
 #[derive(Debug, Clone, Default)]

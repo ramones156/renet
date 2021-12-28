@@ -16,6 +16,39 @@ pub enum DisconnectionReason {
     MismatchingChannelType(u8),
     ReliableChannelOutOfSync(u8),
 }
+impl DisconnectionReason {
+    pub fn id(&self) -> u8 {
+        use DisconnectionReason::*;
+
+        match self {
+            MaxConnections => 0,
+            TimedOut => 1,
+            DisconnectedByServer => 2,
+            DisconnectedByClient => 3,
+            ClientAlreadyConnected => 4,
+            InvalidChannelId(_) => 5,
+            MismatchingChannelType(_) => 6,
+            ReliableChannelOutOfSync(_) => 7,
+        }
+    }
+
+    pub fn try_from(id: u8, channel_id: u8) -> Option<DisconnectionReason> {
+        use DisconnectionReason::*;
+
+        let reason = match id {
+            0 => MaxConnections,
+            1 => TimedOut,
+            2 => DisconnectedByServer,
+            3 => DisconnectedByClient,
+            4 => ClientAlreadyConnected,
+            5 => InvalidChannelId(channel_id),
+            6 => MismatchingChannelType(channel_id),
+            7 => ReliableChannelOutOfSync(channel_id),
+            _ => return None
+        };
+        Some(reason)
+    }
+}
 
 impl fmt::Display for DisconnectionReason {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
