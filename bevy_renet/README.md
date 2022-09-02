@@ -41,15 +41,19 @@ fn receive_message_system(mut server: ResMut<RenetServer>) {
     }
 }
 
-fn handle_events_system(mut server_events: EventReader<ServerEvent>) {
+fn handle_events_system(
+    mut server: ResMut<RenetServer>,
+    mut server_events: EventReader<ServerEvent>
+) {
     while let Some(event) = server.get_event() {
-    for event in server_events.iter() {
-        match event {
-            ServerEvent::ClientConnected(id, user_data) => {
-                println!("Client {} connected", id);
-            }
-            ServerEvent::ClientDisconnected(id) => {
-                println!("Client {} disconnected", id);
+        for event in server_events.iter() {
+            match event {
+                ServerEvent::ClientConnected(id, user_data) => {
+                    println!("Client {} connected", id);
+                }
+                ServerEvent::ClientDisconnected(id) => {
+                    println!("Client {} disconnected", id);
+                }
             }
         }
     }
